@@ -41,7 +41,8 @@ the existing data.
 
 ## Participating
 
-
+If you want to improve this code or otherwise comment on it, feel free to open
+an issue of propose a PR here. Or, contact "huitema@social.secret-wg.org" on Mastodon.
 
 
 
