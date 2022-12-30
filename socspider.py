@@ -1,6 +1,14 @@
 #!/usr/bin/python
 # coding=utf-8
 #
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+#
 # Explore getting data from Mastodon, using only the public API
 #
 # With the public API, we can:
@@ -18,8 +26,10 @@
 #   in the list will thus only create a skeleton toot object, with the toot ID
 #   derived from the URI, and an "in-reply-to" field. These objects are placed
 #   in a "todo" list pending exploitation.
-# - With a toot ID, get the list of who boosted it.
-# - with a toot ID, get the list of who favorited it.
+# - With a toot ID, get the list of who boosted it, and who favorited it.
+#   This is not implemented yet. The API URL are defines as:
+#   url = instance_url + '/api/v1/statuses/' + toot_id + "/reblogged_by"
+#   url = instance_url + '/api/v1/statuses/' + toot_id + "/favourited_by"
 # - Most results provide the user ID in "logical" format, such as
 #   "huitema@social.secret-wg.org". This can be used to
 #   build the "social graph", but the account based API also needs the
@@ -30,6 +40,7 @@
 #   by that user. This can then be used to build a database of toots, or
 #   with the "status context" API to analyse other toots part of the same
 #   threads.
+#
 # The following API are documented but do not appear to work without 
 # credentials:
 # - With an account ID, get the list of ID that that this one "follows"
@@ -47,96 +58,34 @@
 # goal is to visually demonstrate that mastodon's public information
 # is public. And maybe get us thinking about possible protections.
 # 
-from asyncio.windows_events import NULL
-from xml.dom import UserDataHandler
+
 import requests
 import json
 import sys
+import os
+import traceback
+import random
 
+
+# Helper function for processing Rest API
+# TODO: may want to somehow add a timer.
 def restApi(url):
     success = False
-    response = requests.get(url= url)
-    if response.status_code == 200:
-        success = True
-        jresp = json.loads(response.text)
-    else:
-        print("Error for " + url + ": " + str(response.status_code))
-        jresp = json.loads("{}")
-    return success,jresp
-
-def readTootId(instance_url, toot_id):
-    url = instance_url + '/api/v1/statuses/' + toot_id
-    return restApi(url)
-
-def readTootIdContext(instance_url, toot_id):
-    url = instance_url + '/api/v1/statuses/' + toot_id + "/context"
-    return restApi(url)
-
-def getTootBoost(instance_url, toot_id):
-    url = instance_url + '/api/v1/statuses/' + toot_id + "/reblogged_by"
-    return restApi(url)
-
-def getTootFavor(instance_url, toot_id):
-    url = instance_url + '/api/v1/statuses/' + toot_id + "/favourited_by"
-    return restApi(url)
-
-def readProfileId(instance_url, acct_id):
-    print("instance_url: " + instance_url)
-    url = "" + instance_url + '/api/v1/accounts/' + acct_id 
-    return restApi(url)
-
-def statusSummaryFromJson(jresp):
-    display_name = ""
-    account = "???"
-    created_at = "???"
-    content = "???"
-    m_id = "???"
-    if "account" in jresp:
-        account = jresp["acct"]
-        if "display_name" in acct:
-            display_name = account["display_name"]
-        if "acct" in acct:
-            acct = account["acct"]
-        if "id" in acct:
-            m_id = account["id"]
-    if "created_at" in jresp:
-        created_at = jresp["created_at"]
-    if "content" in jresp:
-        content = jresp["content"]
-    display = display_name + " (" + m_id + ", " + acct + "), " + created_at + ":\n" + content + "\n"
-    return display
-
-def getStatuses(instance_url, m_id):
-    url = instance_url + '/api/v1/accounts/' + m_id + "/statuses"
-    return restApi(url)
-
-def getFollow(instance_url, m_id):
-    url = instance_url + '/api/v1/accounts/' + m_id + "/follow"
-    return restApi(url)
-
-def getPublicToots(instance_url, limit=20):
-    url = instance_url + "/api/v1/timelines/public?limit=" + str(limit)
-    return restApi(url)
-
-def mastodon_url(url):
-    ok = False
-    instance_url = ""
-    user = ""
-    m_id = ""
-    if url.startswith("https://"):
-        url1 = url[8:]
-        parts = url1.split("/")
-        if len(parts) == 3:
-            instance_url = "https://" + parts[0]
-            user = parts[1]
-            m_id = parts[2]
-            ok = True
+    try:
+        response = requests.get(url= url)
+        if response.status_code == 200:
+            success = True
+            jresp = json.loads(response.text)
         else:
-            print("Only " + str(len(parts)) + " parts in " + url1)
-    else:
-        print("url " + url + " does not start with https://")
-    return ok, instance_url, user, m_id
+            print("Error for " + url + ": " + str(response.status_code))
+            jresp = json.loads("{}")     
+    except Exception as e:
+        print("Cannot process: " + url)
+        traceback.print_exc()
+        print("\nException: " + str(e))
+        jresp = json.loads("{}")
 
+    return success,jresp
 
 # User, toot and spider classes
 #
@@ -151,16 +100,46 @@ class socUser:
         self.instance_url = instance_url
         self.acct = acct
         self.acct_id = acct_id
-        self.follow = set()
-        self.follower = set()
-    def add_follow(self, instance_url, acct):
+        self.seen_by = set()
+
+    def add_seen_by(self, instance_url, acct):
         key = instance_url + "/" + acct
-        if not key in self.follow:
-            self.follow.add(key)
-    def add_follower(self, instance_url, acct):
-        key = instance_url + "/" + acct
-        if not key in self.follower:
-            self.follower.add(key)
+        if not key in self.seen_by:
+            self.seen_by.add(key)
+
+    def save(self, F):
+        F.write("{ \"instance\": \"" + self.instance_url + "\"")
+        F.write(", \"acct\": \"" + self.acct + "\"")
+        if self.acct_id != "":
+            F.write(", \"acct_id\": \"" + self.acct_id + "\"")
+        if len(self.seen_by) > 0:
+            F.write(", \"seen_by\": [")
+            is_first = True
+            for key in self.seen_by:
+                if not is_first:
+                    F.write(",")
+                is_first = False
+                F.write("\n             \"" + key + "\"")
+            F.write("]")
+        F.write("}")
+
+    def from_json(jusr):
+        try:
+            instance_url = jusr["instance"]
+            acct = jusr["acct"]
+            acct_id = ""
+            if "acct_id" in jusr:
+                acct_id = jusr["acct_id"]
+            usr = socUser(instance_url, acct, acct_id)
+            if "seen_by" in jusr:
+                for key in jusr["seen_by"]:
+                    usr.seen_by.add(key)
+            return(usr)
+        except Exception as e:
+            print("Cannot load user Json.")
+            traceback.print_exc()
+            print("\nException: " + str(e))
+        return(None)
 
 class socToot:
     def __init__(self, instance_url, toot_id, acct, source_id):
@@ -168,7 +147,30 @@ class socToot:
         self.toot_id = toot_id
         self.source_id = source_id
         self.acct = acct
-        self.follow = set()
+
+    def save(self, F):
+        F.write("{ \"instance\": \"" + self.instance_url + "\"")
+        F.write(", \"acct\": \"" + self.acct + "\"")
+        F.write(", \"toot_id\": \"" + self.toot_id + "\"")
+        if self.source_id != "":
+            F.write(", \"source_id\": \"" + self.source_id + "\"")
+        F.write("}")
+
+    def from_json(jusr):
+        try:
+            instance_url = jusr["instance"]
+            acct = jusr["acct"]
+            toot_id = jusr["toot_id"]
+            source_id = ""
+            if "source_id" in jusr:
+                source_id = jusr["source_id"]
+            toot = socToot(instance_url,toot_id, acct, source_id)
+            return(toot)
+        except Exception as e:
+            print("Cannot load toot Json.")
+            traceback.print_exc()
+            print("\nException: " + str(e))
+        return(None)
 
 class socSpider:
     def __init__(self):
@@ -187,7 +189,7 @@ class socSpider:
 
     def learnInstance(self, instance_url):
         if not instance_url in self.instance_list:
-            print("Learning instance: " + instance_url)
+            #print("Learning instance: " + instance_url)
             self.instance_list.add(instance_url)
             self.instance_todo.append(instance_url)
 
@@ -199,15 +201,18 @@ class socSpider:
             usr = socUser(instance_url, account, acct_id)
             self.user_list[key]=usr
             self.learnInstance(instance_url)
-            print("Learning account: " + key)
+            #print("Learning account: " + key)
         if acct_id != "" and usr.acct_id == "":
             usr.acct_id = acct_id
             if not key in self.user_todo:
                 self.user_todo.append(key)
-                print("Scheduled account " + key + " for processing.")
         return usr
+
+    def learnSeenBy(self, instance_url, acct, seen_by_instance, seen_by_acct):
+        usr = self.learnAccount(instance_url, acct, "")
+        usr.add_seen_by(seen_by_instance, seen_by_acct)
             
-    def learnToot(self, instance_url, acct, toot_id):
+    def learnToot(self, instance_url, toot_id, acct):
         key = instance_url+"/"+toot_id
         if not key in self.toot_list:
             toot = socToot(instance_url, toot_id, acct, "")
@@ -271,9 +276,29 @@ class socSpider:
             url = toot.instance_url + '/api/v1/statuses/' + toot.toot_id + "/context"
             ctx_ok, ctx_js = restApi(url)
             if ctx_ok:
-                self.processTootList(ctx_js)
+                self.processTootList(ctx_js, toot.instance_url, toot.acct)
 
-    def processTootListEntry(self, tjsn):
+    def findSourceAcct(self, tjsn):
+        acct = ""
+        instance_url = ""
+        if 'account' in tjsn:
+            acct_data = tjsn['account']
+            if 'acct' in acct_data:
+                acct_parts = acct_data['acct'].split('@')
+                acct = '@' + acct_parts[0]
+                if len(acct_parts) == 2:
+                    instance_url = "https://" + acct_parts[1]
+            if instance_url == "" and 'uri' in tjsn:
+                toot_uri = tjsn["uri"]
+                if toot_uri.startswith("https://"):
+                    uri_parts = toot_uri[8:].split('/')
+                    if len(uri_parts) > 2:
+                        instance_url = "https://" + uri_parts[0]
+                        if acct == "" and len(parts) > 4 and uri_parts[-2] == "statuses":
+                            acct = "@" + uri_parts[-3]
+        return instance_url, acct
+
+    def processTootListEntry(self, tjsn, local_instance, local_acct):
         is_reblog = False
         if 'uri' in tjsn:
             toot_uri = tjsn["uri"]
@@ -287,7 +312,10 @@ class socSpider:
                     if toot_id == "activity":
                         if 'reblog' in tjsn:
                             is_reblog = True
-                            self.processTootListEntry(tjsn['reblog'])
+                            instance_url, acct  = self.findSourceAcct(tjsn)
+                            if local_acct != "" and local_instance != "":
+                                self.learnSeenBy(instance_url, acct, local_instance, local_acct)
+                            self.processTootListEntry(tjsn['reblog'], instance_url, acct)
                     else:
                         if len(parts) > 4 and parts[-2] == "statuses":
                             acct = "@" + parts[-3]
@@ -301,183 +329,224 @@ class socSpider:
                                 acct_parts = acct_data['acct'].split('@')
                                 acct = '@' + acct_parts[0]
                                 ok = True
-                        self.learnToot(instance_url, acct, toot_id)
+                        self.learnToot(instance_url, toot_id, acct)
                         if ok:
                             self.learnAccount(instance_url, acct, "")
+                            if local_acct != "" and local_instance != "":
+                                self.learnSeenBy(instance_url, acct, local_instance, local_acct)
             if not ok and not is_reblog:
                 print("Cannot parse toot URI: " + toot_uri)
 
-    def processTootList(self, jresp):
+    def processTootList(self, jresp, local_instance, local_acct):
         for tjsn in jresp:
-            self.processTootListEntry(tjsn)
+            self.processTootListEntry(tjsn, local_instance, local_acct)
 
     def processInstance(self, instance_url):
         url = instance_url + "/api/v1/timelines/public?limit=20"
         success,jresp = restApi(url)
         if success:
-            self.processTootList(jresp)
+            self.processTootList(jresp, instance_url, "")
 
     def processAccount(self, usr):
         url = usr.instance_url + '/api/v1/accounts/' + usr.acct_id + '/statuses?limit=20'
         success,jresp = restApi(url)
         if success:
-            self.processTootList(jresp)
+            self.processTootList(jresp, usr.instance_url, usr.acct)
 
     def processPendingToots(self):
-        current_list = self.toot_todo
-        self.toot_todo = []
+        if len(self.toot_todo) > 100:
+            current_list = self.toot_todo[:100]
+            self.toot_todo = self.toot_todo[100:]
+        else:
+            current_list = self.toot_todo
+            self.toot_todo = []
         for key in current_list:
             self.processTootId(key)
 
     def processPendingAccounts(self):
-        current_list = self.user_todo
-        self.user_todo = []
+        if len(self.user_todo) > 100:
+            current_list = self.user_todo[:100]
+            self.user_todo = self.user_todo[100:]
+        else:
+            current_list = self.user_todo
+            self.user_todo = []
         for key in current_list:
             usr = self.user_list[key]
             self.processAccount(usr)
 
-    def processPendingInstance(self):
+    def processPendingInstances(self):
         current_list = self.instance_todo.copy()
         for instance_url in current_list:
-            # to do: get public toots
+            self.processInstance(instance_url)
             self.instance_todo.remove(instance_url)
 
-    def loop(self, start='https://mastodon.social/', user_max=200, toot_max=1000):
-        self.processInstance(start)
-        while len(self.user_list) < user_max or len(self.toot_list) < toot_max:
-            spider.processPendingToots()
-            spider.processPendingAccounts()
-            print("\nFound " + str(len(spider.user_list)) + " users, " + str(len(spider.toot_list)) + " toots.\n")
+    def processRandomInstance(self):
+        instance_url = random.choice(self.instance_list)
+
+    def loop(self, start='https://mastodon.social/', new_users=100, new_toots=1000, loops_max=100):
+        nb_loops = 0
+        user_max= len(self.user_list) + new_users
+        toot_max= len(self.toot_list) + new_toots
+        self.learnInstance(start)
+        while (len(self.user_list) < user_max or len(self.toot_list) < toot_max) and nb_loops < loops_max:
+            nb_loops += 1
+            if len(self.toot_todo) > 0:
+                print("\nProcessing at most 100 of " + str(len(self.toot_todo)) + " toots.")
+                self.processPendingToots()
+            elif len(self.user_todo) > 0:
+                print("\nProcessing " + str(len(self.user_todo)) + " accounts.")
+                self.processPendingAccounts()
+            elif len(self.instance_todo) > 0:
+                print("\nProcessing " + str(len(self.instance_todo)) + " instances.")
+                self.processPendingInstances()
+            else:
+                print("\nProcessing a random instance.")
+                self.processRandomInstance()
+            print("\nFound " + str(len(self.instance_list)) + " instances, " + \
+                str(len(self.user_list)) + " users, " + \
+                str(len(self.toot_list)) + " toots.\n")
+
+    def save_instances(self, F):
+        is_first = True
+        F.write("    \"instances\":[\n")
+        for instance_url in self.instance_list:
+            if not is_first:
+                F.write(",\n")
+            is_first = False
+            F.write("        \"" + instance_url + "\"")
+        F.write("]");
+
+    def save_instances_todo(self, F):
+        is_first = True
+        F.write("    \"instances_todo\":[\n")
+        for instance_url in self.instance_todo:
+            if not is_first:
+                F.write(",")
+            is_first = False
+            F.write("\n        \"" + instance_url + "\"")
+        F.write("]");
+
+    def save_toots(self, F):
+        is_first = True
+        F.write("    \"toots\":[\n")
+        for key in self.toot_list:
+            if not is_first:
+                F.write(",\n")
+            is_first = False
+            F.write("        ")
+            self.toot_list[key].save(F)
+        F.write("]");
+
+    def save_toots_todo(self, F):
+        is_first = True
+        F.write("    \"toots_todo\":[")
+        for key in self.toot_todo:
+            if not is_first:
+                F.write(",")
+            is_first = False
+            F.write("\n        \"" + key + "\"")
+        F.write("]");
+
+    def save_users(self, F):
+        is_first = True
+        F.write("    \"users\":[\n")
+        for key in self.user_list:
+            if not is_first:
+                F.write(",\n")
+            is_first = False
+            F.write("        ")
+            self.user_list[key].save(F)
+        F.write("]");
+        
+    def save_users_todo(self, F):
+        is_first = True
+        F.write("    \"users_todo\":[")
+        for key in self.user_todo:
+            if not is_first:
+                F.write(",")
+            is_first = False
+            F.write("\n        \"" + key + "\"")
+        F.write("]");
+
+    def save(self, spider_data_file):
+        try:
+            with open(spider_data_file, "wt",  encoding='utf-8') as F:
+                F.write("{")
+                self.save_instances(F)
+                F.write(",\n")
+                self.save_instances_todo(F)
+                F.write(",\n")
+                self.save_users(F)
+                F.write(",\n")
+                self.save_users_todo(F)
+                F.write(",\n")
+                self.save_toots(F)
+                F.write(",\n")
+                self.save_toots_todo(F)
+                F.write("}\n")
+        except Exception as e:
+            print("Cannot open: " + spider_data_file)
+            traceback.print_exc()
+            print("\nException: " + str(e))
+
+    def load(self, spider_data_file):
+        try:
+            file_contents = ""
+            with open(spider_data_file, "rt",  encoding='utf-8') as F:
+                file_contents = F.read()
+            print("Loaded " + str(len(file_contents)) + " bytes from " + spider_data_file)
+            jfile = json.loads(file_contents)
+            if "instances" in jfile:
+                for key in jfile["instances"]:
+                    self.instance_list.add(key)
+            if "instances_todo" in jfile:
+                for key in jfile["instances_todo"]:
+                    self.instance_todo.append(key)
+            if "users" in jfile:
+                for jusr in jfile["users"]:
+                    usr = socUser.from_json(jusr)
+                    if usr != None:
+                        key = usr.instance_url + "/" + usr.acct
+                        self.user_list[key] = usr
+            if "users_todo" in jfile:
+                for key in jfile["users_todo"]:
+                    self.user_todo.append(key)
+            if "toots" in jfile:
+                for jtoot in jfile["toots"]:
+                    toot = socToot.from_json(jtoot)
+                    if toot != None:
+                        key = toot.instance_url + "/" + toot.toot_id
+                        self.toot_list[key] = toot
+            if "toots_todo" in jfile:
+                for key in jfile["toots_todo"]:
+                    self.toot_todo.append(key)
+        except Exception as e:
+            print("Cannot open: " + spider_data_file)
+            traceback.print_exc()
+            print("\nException: " + str(e))
+        print("\nLoaded " + str(len(self.instance_list)) + " instances, " + \
+            str(len(self.user_list)) + " users, " + \
+            str(len(self.toot_list)) + " toots.\n")
+        if len(self.instance_list) == 0:
+            print("The JSON file includes the following keys:")
+            for key in jfile:
+                print(key)
+            exit(1)
+
 
 # main
 
-testing_instance = False
-testing_toot_id = False
-testing_toot_context = False
-testing_statuses = False
-testing_boost = False
-testing_favor = False
-testing_follow = False
-testing_profile_id = False
-testing_public_time_line = False
-testing_usage = False
-
-toot_url = "https://mastodon.gougere.fr/@bortzmeyer/109332158592316612"
-user_url = "https://mastodon.gougere.fr/@bortzmeyer/369"
-url = "https://mastodon.gougere.fr/@bortzmeyer/109332158592316612"
-
-if len(sys.argv) > 1:
-    testing = sys.argv[1]
-    if testing == "id":
-        testing_toot_id = True
-        url = toot_url
-    elif testing == "context":
-        testing_toot_context = True
-        url = toot_url
-    elif testing == "profile":
-        testing_profile_id = True
-        url = user_url
-    elif testing == "statuses":
-        url = user_url
-        testing_statuses = True
-    elif testing == "boost":
-        url = toot_url
-        testing_boost = True
-    elif testing == "favor":
-        url = toot_url
-        testing_favor = True
-    elif testing == "follow":
-        testing_follow = True
-        url = user_url
-    elif testing == "public":
-        testing_public_time_line = True
-        url = toot_url
-    elif testing == "instance":
-        testing_instance = True
-        url = toot_url
-    else:
-        print("Unknown testing arg: " + testing)
-        testing_usage = True
-    if len(sys.argv) > 2:
-        url = sys.argv[2]
-    else:
-        print("Using default URL: " + url)
-    if len(sys.argv) > 3:
-        testing_usage = True
-else:
-    testing_usage = True
-
-if testing_usage:
-    print("Usage: " + sys.argv[0] + " {id|context|profile|follow} [url]")
+url = "https://mastodon.social"
+if len(sys.argv) > 3 or len(sys.argv) < 2:
+    print("Usage: " + sys.argv[0] + "<json data file> [instance url]")
     exit(1)
+elif len(sys.argv) == 3:
+    url = sys.argv[2]
+spider_data_file = sys.argv[1]
+spider = socSpider()
+if os.path.isfile(spider_data_file):
+    spider.load(spider_data_file)
+spider.loop(start=url)
+spider.save(spider_data_file)
 
-ok, instance_url, user, m_id = mastodon_url(url)
-if not ok:
-    print("Could not parse: {}", url)
-    exit(1)
-else:
-    print("Host: " + instance_url + ", user: " + user + ", id: " + m_id);
 
-if testing_toot_id:
-    success, jresp = readTootId(instance_url, m_id)
-    print("Success: " + str(success))
-    if success:
-        print(str(jresp))
-
-if testing_toot_context:
-    success, jresp = readTootIdContext(instance_url, m_id)
-    print("Success: " + str(success))
-    if success:
-        if "descendants" in jresp:
-            for resp in jresp["descendants"]:
-                display_response = statusSummaryFromJson(resp)
-                print(display_response)
-
-if testing_boost:
-    print("testing boosted by")
-    success, jresp = getTootBoost(instance_url, m_id)
-    print("Success: " + str(success))
-    # returns a list of accounts
-    if success:
-        print(str(jresp))
-
-if testing_favor:
-    print("testing favorited by")
-    success, jresp = getTootFavor(instance_url, m_id)
-    print("Success: " + str(success))
-    # returns a list of accounts
-    if success:
-        print(str(jresp))
-
-if testing_statuses:
-    print("testing read_statuses")
-    success, jresp = getStatuses(instance_url, m_id)
-    print("Success: " + str(success))
-    # return is a list of toots
-
-if testing_follow:
-    print("testing read_follow")
-    success, jresp = getFollow(instance_url, m_id)
-    print("Success: " + str(success))
-    # does not succeed -- auth required.
-    if success:
-        print(str(jresp))
-
-if testing_profile_id:
-    print("testing read_profile_ID")
-    success, jresp = readProfileId(instance_url, m_id)
-    print("Success: " + str(success))
-    if success:
-        print(str(jresp))
-
-if testing_public_time_line:
-    print("testing public time line")
-    success, jresp = getPublicToots(instance_url)
-    print("Success: " + str(success))
-    # return is a list of toots
-    if success:
-        print(str(jresp))
-
-if testing_instance:
-    spider = socSpider()
-    spider.loop()
