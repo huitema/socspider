@@ -6,12 +6,12 @@ The program will start by reading toots in the public timeline of a "start" inst
 and an approximation of the social graph, by recording for each discovered user the handles of the
 users by which it is seen.
 
-The program is slow. It takes several minutes to learn the profiles of 100 users. It could
-take two years to process 10 million Mastodon users. But then, the program is not optimized at
-all. A lot of time is spent waiting for responses of remote servers, and a lot of time can be lost
-when those servers are not responding. Adding some timers would change that. Also, a lot of the
-work could be parallelized. Running on a big 256 core server, the 10 million accounts mentioned
-above could be parsed in 2 or 3 days. Running on a cluster of machines would be faster still.
+The program is not fast. It takes almost 2 minutes (1:44) to learn the profiles of 100 users. It could
+take 4 months to process 10 million Mastodon users. But then, the program is not optimized at
+all. A lot of time is spent waiting for responses of remote servers. This could be reduced
+by running several queries in parallel, in multiple threads. Running on a big 256 core server,
+the 10 million accounts mentioned above could be parsed in about 12 hours. Running on a cluster
+of machines would be faster still.
 
 The point here is not speed. The point is to demonstrate the power of public API like
 "reading the public timeline", "reading the data of a toot", "reading a thread starting
