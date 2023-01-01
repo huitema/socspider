@@ -27,7 +27,7 @@
 #   derived from the URI, and an "in-reply-to" field. These objects are placed
 #   in a "todo" list pending exploitation.
 # - With a toot ID, get the list of who boosted it, and who favorited it.
-#   This is not implemented yet. The API URL are defines as:
+#   This is not implemented yet. The API URL are defined as:
 #   url = instance_url + '/api/v1/statuses/' + toot_id + "/reblogged_by"
 #   url = instance_url + '/api/v1/statuses/' + toot_id + "/favourited_by"
 # - Most results provide the user ID in "logical" format, such as
@@ -102,10 +102,11 @@ class socUser:
 
     def add_seen_by(self, instance_url, acct):
         added = 0
-        key = instance_url + "/" + acct
-        if not key in self.seen_by:
-            self.seen_by.add(key)
-            added = 1
+        if instance_url != self.instance_url or acct != self.acct:
+            key = instance_url + "/" + acct
+            if not key in self.seen_by:
+                self.seen_by.add(key)
+                added = 1
         return added
 
     def save(self, F):
@@ -143,29 +144,36 @@ class socUser:
         return(None)
 
 class socToot:
-    def __init__(self, instance_url, toot_id, acct, source_id):
-        self.instance_url = instance_url
+    def __init__(self, uri, toot_id, acct, source_id):
         self.toot_id = toot_id
         self.source_id = source_id
         self.acct = acct
+        self.uri = uri
+
+    def get_instance_url(self):
+        url = ""
+        if self.uri.startswith("https://"):
+            parts = self.uri[8:].split("/")
+            url = "https://" + parts[0]
+        return(url)
 
     def save(self, F):
-        F.write("{ \"instance\": \"" + self.instance_url + "\"")
+        F.write("{ \"uri\": \"" + self.uri + "\"")
         F.write(", \"acct\": \"" + self.acct + "\"")
         F.write(", \"toot_id\": \"" + self.toot_id + "\"")
         if self.source_id != "":
             F.write(", \"source_id\": \"" + self.source_id + "\"")
         F.write("}")
 
-    def from_json(jusr):
+    def from_json(jtoot):
         try:
-            instance_url = jusr["instance"]
-            acct = jusr["acct"]
-            toot_id = jusr["toot_id"]
+            uri = jtoot["uri"]
+            acct = jtoot["acct"]
+            toot_id = jtoot["toot_id"]
             source_id = ""
-            if "source_id" in jusr:
-                source_id = jusr["source_id"]
-            toot = socToot(instance_url,toot_id, acct, source_id)
+            if "source_id" in jtoot:
+                source_id = jtoot["source_id"]
+            toot = socToot(uri, toot_id, acct, source_id)
             return(toot)
         except Exception as e:
             print("Cannot load toot Json.")
@@ -185,10 +193,15 @@ class socSpider:
         self.toot_todo = []
         self.nb_seen_by = 0
         self.nb_user_full = 0
+        # Journal classes: entries that have been touched in the current run
+        self.instance_touch = set()
+        self.user_touch = set()
+        self.toot_touch = set()
 
     def learnInstance(self, instance_url):
         if not instance_url in self.instance_list:
             self.instance_list.add(instance_url)
+            self.instance_touch.add(instance_url)
 
     def learnAccount(self, instance_url, acct, acct_id):
         key = instance_url+"/"+acct
@@ -198,22 +211,28 @@ class socSpider:
             usr = socUser(instance_url, acct, acct_id)
             self.user_list[key]=usr
             self.learnInstance(instance_url)
+            self.user_touch.add(key)
         if acct_id != "" and usr.acct_id == "":
             usr.acct_id = acct_id
             self.nb_user_full += 1
+            self.user_touch.add(key)
         return usr
 
     def learnSeenBy(self, instance_url, acct, seen_by_instance, seen_by_acct):
         usr = self.learnAccount(instance_url, acct, "")
-        self.nb_seen_by += usr.add_seen_by(seen_by_instance, seen_by_acct)
+        n = usr.add_seen_by(seen_by_instance, seen_by_acct)
+        if n > 0:
+            self.nb_seen_by += n
+            self.user_touch.add(usr.instance_url+"/"+usr.acct)
 
-    def learnToot(self, instance_url, toot_id, acct):
-        key = instance_url+"/"+toot_id
-        if not key in self.toot_list:
-            toot = socToot(instance_url, toot_id, acct, "")
-            self.toot_list[key]=toot
-            self.toot_todo.append(key)
-            self.learnInstance(instance_url)
+    # TODO: remember the instance on which this was seen, and the local ID
+    def learnToot(self, uri, toot_id, acct):
+        if not uri in self.toot_list:
+            toot = socToot(uri, toot_id, acct, "")
+            self.toot_list[uri]=toot
+            self.toot_touch.add(uri)
+            self.toot_todo.append(uri)
+            self.learnInstance(toot.get_instance_url())
 
     def findTootOrigin(self, tjsn, current_instance, same_instance):
         ok = False
@@ -245,7 +264,7 @@ class socSpider:
         usr = None
         ok = False
         # First, retrieve the source instance and the unique identifier of the toot,
-        # from the URI component.
+        # from the URI component. This is the toot ID. Not having one is fatal.
         if 'uri' in tjsn:
             toot_uri = tjsn["uri"]
             if toot_uri.startswith("https://"):
@@ -256,41 +275,52 @@ class socSpider:
                     ok = True
                     if instance_url != local_instance:
                         is_same_instance = False
-        # Then, identify the origin of the toot
-        if ok:
-            # TODO: consider same instance if instance_url == local_instance
-            ok, usr = self.findTootOrigin(tjsn, local_instance, is_same_instance)
-            if not ok:
-                print("Cannot find origin for toot: " + toot_uri)
-        # Process the toot
-        if ok:
-            if toot_id == "activity":
-                # This happens if this is a "reblog"
-                if 'reblog' in tjsn:
-                    is_reblog = True
+            # Then, identify the origin of the toot
+            if ok:
+                # TODO: consider same instance if instance_url == local_instance
+                ok, usr = self.findTootOrigin(tjsn, local_instance, is_same_instance)
+                if not ok:
+                    print("Cannot find origin for toot: " + toot_uri)
+            # Process the toot
+            if ok:
+                if toot_id == "activity":
+                    # This happens if this is a "reblog"
+                    if 'reblog' in tjsn:
+                        is_reblog = True
+                        if local_acct != "" and local_instance != "":
+                            self.learnSeenBy(usr.instance_url, usr.acct, local_instance, local_acct)
+                        is_same_instance_reblog = is_same_instance
+                        if usr.instance_url != local_instance:
+                            is_same_instance_reblog = False
+                        self.processTootListEntry(tjsn['reblog'], usr.instance_url, usr.acct, is_same_instance_reblog)
+                else:
+                    # This is a regular toot.
+                    # TODO: record whether the toot comes from a Pleroma server?
+                    self.learnToot(toot_uri, toot_id, usr.acct)
                     if local_acct != "" and local_instance != "":
                         self.learnSeenBy(usr.instance_url, usr.acct, local_instance, local_acct)
-                    is_same_instance_reblog = is_same_instance
-                    if usr.instance_url != local_instance:
-                        is_same_instance_reblog = False
-                    self.processTootListEntry(tjsn['reblog'], usr.instance_url, usr.acct, is_same_instance_reblog)
-            else:
-                # This is a regular toot.
-                # TODO: record whether the toot comes from a Pleroma server?
-                self.learnToot(instance_url, toot_id, usr.acct)
-                if local_acct != "" and local_instance != "":
-                    self.learnSeenBy(usr.instance_url, usr.acct, local_instance, local_acct)
 
     def processTootList(self, jresp, local_instance, local_acct, is_same_instance):
         for tjsn in jresp:
             self.processTootListEntry(tjsn, local_instance, local_acct, is_same_instance)
 
+    # TODO: the transaction requires a toot-id. There are two forms: a local id
+    # valid on this instance only, and an original ID at the sender. The sender is
+    # special, because it provides the key for looking in the context of a user,
+    # and thus we make efforts to retrieve it. But that only works if the server
+    # allows, which some implementation don't. If it doesn't, it should still be 
+    # possible to get the thread in the local context.
     def processTootId(self, key):
         # first get the toot itself, and process it
+        if not key in self.toot_list:
+            print("Bad toot key: " + key)
+            traceback.print_stack()
+            exit(0)
         toot = self.toot_list[key]
         ok = False
         usr = None
-        acct_key = toot.instance_url + '/' + toot.acct
+        toot_instance = toot.get_instance_url()
+        acct_key = toot_instance + '/' + toot.acct
         if not toot.toot_id.isdigit():
             # Mastodon servers use numeric IDs. Servers running Pleroma
             # use a 128 bit identifier, including hex digits and hyphens.
@@ -304,7 +334,7 @@ class socSpider:
             # use the Mastodon syntax, if it contains at least one hyphen,
             # the pleroma syntax.
             # TODO: check whether even querying Pleroma servers is useful.
-            api_key = toot.instance_url + '/api/v1/statuses/'
+            api_key = toot_instance + '/api/v1/statuses/'
             if toot.toot_id.isdigit():
                 api_key += toot.toot_id
             else:
@@ -312,7 +342,7 @@ class socSpider:
             ok,jresp = restApi(api_key)
             if ok:
                 # if we did get a clean copy, retrieve the origin ID, etc.
-                origin_ok, usr = self.findTootOrigin(jresp, toot.instance_url, True)
+                origin_ok, usr = self.findTootOrigin(jresp, toot_instance, True)
                 if origin_ok :
                     # attach source to toot
                     toot.source_id = usr.acct_id
@@ -327,11 +357,28 @@ class socSpider:
         if ok:
             # TODO: process the boost and favor lists
             # then get the toot context
-            url = toot.instance_url + '/api/v1/statuses/' + toot.toot_id + "/context"
+            # TODO: consider using local API to read thread
+            url = toot_instance + '/api/v1/statuses/' + toot.toot_id + "/context"
+            original_usr = usr
+            is_same_instance = True
             ctx_ok, ctx_js = restApi(url)
-            if ctx_ok:
-                if 'descendants' in ctx_js:
-                    self.processTootList(ctx_js['descendants'], toot.instance_url, toot.acct, True)
+            if ctx_ok and 'ancestors' in ctx_js and len(ctx_js['ancestors']) > 0:
+                # Retrieve the first ancestor, which is the original poster of the thread.
+                ancestors = ctx_js['ancestors']
+                ctx_ok, original_usr = self.findTootOrigin(ancestors[0], toot_instance, is_same_instance)
+                if (ctx_ok):
+                    self.processTootListEntry(ancestors[0], toot_instance, toot.acct, is_same_instance)
+                    if (is_same_instance and original_usr.instance_url != toot_instance):
+                        is_same_instance = False
+                    if len(ancestors) > 1:
+                        # Record all replies to the thread as seen by original poster
+                        self.processTootList(ancestors[1:], original_usr.instance_url, original_usr.acct, is_same_instance)
+                else:
+                    print("Cannot find origin of ancestor" + toot.uri)
+                    ctx_ok = False
+            if ctx_ok and 'descendants' in ctx_js:
+                # Record all replies to the thread as seen by original poster
+                self.processTootList(ctx_js['descendants'], original_usr.instance_url, original_usr.acct, is_same_instance)
 
     def processInstance(self, instance_url):
         url = instance_url + "/api/v1/timelines/public?limit=20"
@@ -429,12 +476,12 @@ class socSpider:
 
     def save_users(self, F):
         is_first = True
-        F.write("    \"users\":[\n")
+        F.write("    \"users\":[")
         for key in self.user_list:
             if not is_first:
-                F.write(",\n")
+                F.write(",")
             is_first = False
-            F.write("        ")
+            F.write("\n        ")
             self.user_list[key].save(F)
         F.write("]");
 
@@ -478,7 +525,7 @@ class socSpider:
                 for jtoot in jfile["toots"]:
                     toot = socToot.from_json(jtoot)
                     if toot != None:
-                        key = toot.instance_url + "/" + toot.toot_id
+                        key = toot.uri
                         self.toot_list[key] = toot
             if "toots_todo" in jfile:
                 for key in jfile["toots_todo"]:
@@ -496,6 +543,65 @@ class socSpider:
             for key in jfile:
                 print(key)
             exit(1)
+
+    # Parallel processing.
+    # If there are enough "todo toots" available, we can "split the load" by
+    # splitting the toot_todo list in N buckets, then have each bucket resolved in a
+    # parallel process. Once all buckets are done, we can merge the results. One
+    # simple way would be to save each thread using the gloabl "save", gather all
+    # the files, and load them all. That would work, but it is rather inefficient
+    # because the whole files are megabytes, but the added content is just kilebytes.
+    # Another option is to maintain a "journal" of changes, and only load that.
+    # An even simpler option might be to keep the indices of the toots, users
+    # and instances that were affected, and just save and load that.
+    def save_touched_instances(self, F):
+        F.write("    \"instances\": [")
+        is_first = True
+        for key in self.intance_touch:
+            if not is_first:
+                F.write(",")
+            is_first = False
+            F.write("\n        \"" + key + "\"")
+        F.write("]")
+
+    def save_touched_users(self, F):
+        F.write("    \"users\": [")
+        is_first = True
+        for key in self.user_touch:
+            if not is_first:
+                F.write(",")
+            is_first = False
+            F.write("\n        ")
+            self.user[key].save(F)
+        F.write("]")
+
+    def save_touched(self, delta_file):
+        try:
+            with open(delta_file, "wt",  encoding='utf-8') as F:
+                F.write("{")
+                self.save_touched_instances(F)
+                F.write(",\n")
+                self.save_touched_users(F)
+                F.write(",\n")
+                self.save_toots(F)
+                F.write(",\n")
+                self.save_toots_todo(F)
+                F.write("}\n")
+        except Exception as e:
+            print("Cannot open: " + spider_data_file)
+            traceback.print_exc()
+            print("\nException: " + str(e))
+
+    def parallel_loop(file_prefix):
+        # Find the number of processors.
+        # Assign todo ranges to each thread.
+        # Start each thread.
+        # When the thread start, replace the toot_todo list by the selected
+        # subset for the thread.
+        # Perform the loop in each thread.
+        # Save the journal.
+        # in the main thread, load the saved data on top of the existing data.
+        pass 
 
 # main
 
