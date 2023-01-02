@@ -145,7 +145,7 @@ class socUser:
         return(None)
 
 class socToot:
-    def __init__(self, uri, toot_id, acct, source_id, local_instance, local_id, from_thread):
+    def __init__(self, uri, toot_id, acct, source_id, local_instance, local_id, from_thread, favor, related):
         self.toot_id = toot_id
         self.source_id = source_id
         self.acct = acct
@@ -153,6 +153,8 @@ class socToot:
         self.local_instance = local_instance
         self.local_id = local_id
         self.from_thread = from_thread
+        self.favor = favor
+        self.related = related
 
     def get_instance_url(self):
         url = ""
@@ -173,6 +175,10 @@ class socToot:
             F.write(", \"local_id\": \"" + self.local_id + "\"")
         if self.from_thread:
             F.write(", \"from_thread\": \"" + "True" + "\"")
+        if self.favor > 0:
+            F.write(", \"favor\": \"" + str(self.favor) + "\"")
+        if self.related > 0:
+            F.write(", \"related\": \"" + str(self.related) + "\"")
         F.write("}")
 
     def from_json(jtoot):
@@ -192,7 +198,22 @@ class socToot:
             from_thread = False
             if "from_thread" in jtoot:
                 from_thread = (jtoot["from_thread"] == "True")
-            toot = socToot(uri, toot_id, acct, source_id, local_instance, local_id, from_thread)
+            favor = 0
+            if "favor" in jtoot:
+                try:
+                    favor = int(jtoot["favor"])
+                except:
+                    print("Loading toot: " + uri + ", bad favor: " + jtoot["favor"])
+            related = 0
+            if "related" in jtoot:
+                try:
+                    related = int(jtoot["related"])
+                except:
+                    print("Loading toot: " + uri + ", bad related: " + jtoot["related"])
+
+            if "from_thread" in jtoot:
+                from_thread = (jtoot["from_thread"] == "True")
+            toot = socToot(uri, toot_id, acct, source_id, local_instance, local_id, from_thread, favor, related)
             return(toot)
         except Exception as e:
             print("Cannot load toot Json.")
@@ -268,9 +289,9 @@ class socSpider:
             self.nb_seen_by += n
             self.user_touch.add(usr.instance_url+"/"+usr.acct)
 
-    def learnToot(self, uri, toot_id, acct, local_instance, local_id, from_thread):
+    def learnToot(self, uri, toot_id, acct, local_instance, local_id, from_thread, favor, related):
         if not uri in self.toot_list:
-            toot = socToot(uri, toot_id, acct, "", local_instance, local_id, from_thread)
+            toot = socToot(uri, toot_id, acct, "", local_instance, local_id, from_thread, favor, related)
             self.toot_list[uri]=toot
             self.toot_touch.add(uri)
             self.toot_todo.append(uri)
@@ -278,24 +299,28 @@ class socSpider:
         elif from_thread:
             self.from_thread = True
 
+    def findAcctOrigin(self, acct_data, local_instance):
+        ok = False
+        usr = None
+        if 'acct' in acct_data:
+            ok = True
+            acct_parts = acct_data['acct'].split('@')
+            acct = '@' + acct_parts[0]
+            acct_id = ""
+            if len(acct_parts) == 2:
+                instance_url = "https://" + acct_parts[1]
+            else:
+                instance_url = local_instance
+            if  instance_url == local_instance and "id" in acct_data:
+                acct_id = acct_data["id"]
+            usr = self.learnAccount(instance_url, acct, acct_id)
+        return ok, usr
+
     def findTootOrigin(self, tjsn, local_instance):
         ok = False
         usr = None
-
         if "account" in tjsn:
-            acct_data = tjsn["account"]
-            if 'acct' in acct_data:
-                ok = True
-                acct_parts = acct_data['acct'].split('@')
-                acct = '@' + acct_parts[0]
-                acct_id = ""
-                if len(acct_parts) == 2:
-                    instance_url = "https://" + acct_parts[1]
-                else:
-                    instance_url = local_instance
-                if  instance_url == local_instance and "id" in acct_data:
-                    acct_id = acct_data["id"]
-                usr = self.learnAccount(instance_url, acct, acct_id)
+            ok, usr = self.findAcctOrigin(tjsn["account"], local_instance)
         return ok, usr
 
     def processTootListEntry(self, tjsn, local_instance, seen_by_instance, seen_by_acct, from_thread):
@@ -333,8 +358,25 @@ class socSpider:
                     local_id = ""
                     if 'id' in tjsn:
                         local_id = tjsn['id']
+                    favor = 0
+                    if "favourited" in tjsn:
+                        try:
+                            favor = int(tjsn["favourited"])
+                        except:
+                            print("Bad format for " + toot_uri + ", favourited = " + tjsn["favourited"])
+                            favor = 0
+                    related = 0
+                    if "replies_count" in tjsn:
+                        try:
+                            related = int(tjsn["replies_count"])
+                        except:
+                            print("Bad format for " + toot_uri + ", replies_count = " + tjsn["replies_count"])
+                            related = 0
+                    if related == 0 and "in_reply_to_id" in tjsn and tjsn["in_reply_to_id"] != None:
+                        related += 1
+
                     # TODO: record whether the toot comes from a Pleroma server?
-                    self.learnToot(toot_uri, toot_id, usr.acct, local_instance, local_id, from_thread)
+                    self.learnToot(toot_uri, toot_id, usr.acct, local_instance, local_id, from_thread, favor, related)
                     if seen_by_acct != "" and seen_by_instance != "":
                         self.learnSeenBy(usr.instance_url, usr.acct, seen_by_instance, seen_by_acct)
 
@@ -395,50 +437,73 @@ class socSpider:
             ok = True
             usr = self.user_list[acct_key]
 
+            
+        # The previous test determined whether it is possible to directly
+        # access the origin of a toot. If that is not possible, we shall instead 
+        # try to access the cache copy at the instance that saw it first.
+        local_instance = toot_instance
+        local_id = toot.toot_id
+        if not ok and toot.local_instance != "" and toot.local_instance != toot_instance and toot.local_id != "":
+            local_instance = toot.local_instance
+            local_id = toot.local_id
+            if usr == None and acct_key in self.user_list:
+                usr = self.user_list[acct_key]
+                ok = usr != None
+
+        # if the toot is marked has being favourited, run a query.
+        if ok and not toot.favor > 0:
+            #   url = instance_url + '/api/v1/statuses/' + toot_id + "/favourited_by"
+            url = local_instance + '/api/v1/statuses/' + local_id + "/favourited_by"
+            fav_ok, fav_js = restApi(url)
+            if not fav_ok:
+                if local_instance in self.instance_list:
+                    self.instance_list[local_instance].just_failed()
+                if local_instance == toot_instance and toot.local_instance != "" and toot.local_instance != toot_instance and toot.local_id != "":
+                    # Switch to toot local instance to avoid repeated failure
+                    local_instance = toot.local_instance
+                    local_id = toot.local_id
+                else:
+                    ok = False
+            else:
+                if local_instance in self.instance_list:
+                    self.instance_list[local_instance].back_on()
+                # Process the list of accounts returned as favoriting
+                for acct_js in fav_js:
+                    one_fav_ok, favor_usr = self.findAcctOrigin(acct_js, local_instance)
+                    if one_fav_ok:
+                        self.learnSeenBy(toot_instance, toot.acct, favor_usr.instance_url, favor_usr.acct)
         # Access the context of the toot to obtain all the toots in the same thread,
         # but only do that if the toot was not discovered by downloading a thread.
-        if not toot.from_thread:
-            # The previous test determined whether it is possible to directly
-            # access the origin of a toot. If that is not possible, we shall instead 
-            # try to access the cache copy at the instance that saw it first.
-            local_instance = toot_instance
-            local_id = toot.toot_id
-            if not ok and toot.local_instance != "" and toot.local_instance != toot_instance and toot.local_id != "":
-                local_instance = toot.local_instance
-                local_id = toot.local_id
-                if usr == None and acct_key in self.user_list:
-                    usr = self.user_list[acct_key]
-                ok = usr != None
-            if ok:
-                # Get the toot's context
-                # TODO: process the boost and favor lists
-                url = local_instance + '/api/v1/statuses/' + local_id + "/context"
-                original_usr = usr
-                ctx_ok, ctx_js = restApi(url)
-                if ctx_ok:
-                    if local_instance in self.instance_list:
-                        self.instance_list[local_instance].back_on()
+        if ok and not toot.from_thread and toot.related > 0:
+            # Get the toot's context
+            # TODO: process the boost and favor lists
+            url = local_instance + '/api/v1/statuses/' + local_id + "/context"
+            original_usr = usr
+            ctx_ok, ctx_js = restApi(url)
+            if ctx_ok:
+                if local_instance in self.instance_list:
+                    self.instance_list[local_instance].back_on()
+            else:
+                if local_instance != toot_instance:
+                    # Alarm for failures caused by a local retry
+                    print("Failure after trying " + url + " for toot " + toot.uri)
+                if local_instance in self.instance_list:
+                    self.instance_list[local_instance].just_failed()
+            if ctx_ok and 'ancestors' in ctx_js and len(ctx_js['ancestors']) > 0:
+                # Retrieve the first ancestor, which is the original poster of the thread.
+                ancestors = ctx_js['ancestors']
+                ctx_ok, original_usr = self.findTootOrigin(ancestors[0], toot_instance)
+                if (ctx_ok):
+                    self.processTootListEntry(ancestors[0], local_instance, toot_instance, toot.acct, True)
+                    if len(ancestors) > 1:
+                        # Record all replies to the thread as seen by original poster
+                        self.processTootList(ancestors[1:], local_instance, original_usr.instance_url, original_usr.acct, True)
                 else:
-                    if local_instance != toot_instance:
-                        # Alarm for failures caused by a local retry
-                        print("Failure after trying " + url + " for toot " + toot.uri)
-                    if local_instance in self.instance_list:
-                        self.instance_list[local_instance].just_failed()
-                if ctx_ok and 'ancestors' in ctx_js and len(ctx_js['ancestors']) > 0:
-                    # Retrieve the first ancestor, which is the original poster of the thread.
-                    ancestors = ctx_js['ancestors']
-                    ctx_ok, original_usr = self.findTootOrigin(ancestors[0], toot_instance)
-                    if (ctx_ok):
-                        self.processTootListEntry(ancestors[0], local_instance, toot_instance, toot.acct, True)
-                        if len(ancestors) > 1:
-                            # Record all replies to the thread as seen by original poster
-                            self.processTootList(ancestors[1:], local_instance, original_usr.instance_url, original_usr.acct, True)
-                    else:
-                        print("Cannot find origin of ancestor" + toot.uri)
-                        ctx_ok = False
-                if ctx_ok and 'descendants' in ctx_js:
-                    # Record all replies to the thread as seen by original poster
-                    self.processTootList(ctx_js['descendants'], local_instance, original_usr.instance_url, original_usr.acct, True)
+                    print("Cannot find origin of ancestor" + toot.uri)
+                    ctx_ok = False
+            if ctx_ok and 'descendants' in ctx_js:
+                # Record all replies to the thread as seen by original poster
+                self.processTootList(ctx_js['descendants'], local_instance, original_usr.instance_url, original_usr.acct, True)
 
     def processInstance(self, instance_url):
         url = instance_url + "/api/v1/timelines/public?limit=20"
