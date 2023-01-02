@@ -6,22 +6,22 @@ The program will start by reading toots in the public timeline of a "start" inst
 and an approximation of the social graph, by recording for each discovered user the handles of the
 users by which it is seen.
 
-The program is not fast. It takes 2 to 3 minutes on a laptop to learn the profiles of 100 users. It could
-take 6 months to process 10 million Mastodon users. But then, the program is not optimized at
+The program is not fast. It takes about 1 minute on a laptop to learn the profiles of 100 users. It could
+take 2 months to process 10 million Mastodon users. But then, the program is not optimized at
 all. A lot of time is spent waiting for responses of remote servers. This could be reduced
 by running several queries in parallel, in multiple threads. Running on a big 256 core server,
-the 10 million accounts mentioned above could be parsed in about 18 hours. Running on a cluster
+the 10 million accounts mentioned above could be parsed in about 6 hours. Running on a cluster
 of machines would be faster still.
 
 The point here is not speed. The point is to demonstrate the power of public API like
 "reading the public timeline", "reading the data of a toot", "reading a thread starting
-with a toot" or "reading the public messages sent by an account". In the Mastodon
-implementation, these APIs are public. (The same API appear to be access controlled in 
-servers running Pleroma.)
+with a toot", "reading who favorited a toot"" or "reading the public messages sent by an
+account". In the Mastodon implementation, these APIs are public. (The same APIs appear to be
+access controlled in servers running Pleroma.)
 
-The power could be used for good or for bad. For example, the spider could be augmented to
+The power of the API could be used for good or for bad. For example, the spider could be augmented to
 also collect hash-tags read by users, or assign weights to the relations between users.
-On the good side, this would enable building catalog of servers or dictionaries of users,
+On the good side, this would enable building catalog of servers or directories of users,
 or to add a search function to the Fediverse. On the bad side, this is exactly the kind
 of data required for "serving better ads", or to find targets of harassment.
 

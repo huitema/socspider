@@ -26,10 +26,7 @@
 #   in the list will thus only create a skeleton toot object, with the toot ID
 #   derived from the URI, and an "in-reply-to" field. These objects are placed
 #   in a "todo" list pending exploitation.
-# - With a toot ID, get the list of who boosted it, and who favorited it.
-#   This is not implemented yet. The API URL are defined as:
-#   url = instance_url + '/api/v1/statuses/' + toot_id + "/reblogged_by"
-#   url = instance_url + '/api/v1/statuses/' + toot_id + "/favourited_by"
+# - With a toot ID, get the list of who favorited it.
 # - Most results provide the user ID in "logical" format, such as
 #   "huitema@social.secret-wg.org". This can be used to
 #   build the "social graph", but the account based API also needs the

@@ -35,16 +35,14 @@ The spider discover toots in three ways:
   account API. (That API can only be used on that account's server)
 * by looking at the thread to which a toot belongs, using the "context" variant of the
   "statuses" API. That API can be invoked on any server that has a cached copy of
-  the thread.
+  the thread. 
 
 Toots that have been discovered but are not yet "processed" are placed in a "todo" list.
 The server may try to download the "reference" version of the toot if the account ID
 of the sender is not yet known -- this will enable later use of the account API. The
 server will then try to use the "context" variant of the statuses API to get all the
-toots in the thread.
-TODO: consider using the "favourited" and "boosted" APIs
-TODO: consider sorting the pending toots by instance, so a presistent TCP/TLS
-connection can be used for a series of requests.
+toots in the thread, and the "favourited" variant of the statuses API to get all the
+accounts who favorited at toot.
 
 When all discovered toots have been processed, the server picks one of the discovered
 accounts at random, and reads the last toots received by that account. If no account
@@ -57,4 +55,23 @@ Servers can fail to respond to query for a variety of reasons. For the spider, t
 worst error happens when the server is overloaded and the query times out. This blocks
 the discovery thread. In theory, the python API allows us to set a 5 second limit, which
 limits the amount of disruption, but even that is not ideal. Besides, if a server
-is indeed overloaded, the nice thing to do is avoid loading it more.
+is indeed overloaded, the nice thing to do is avoid loading it more. The spider
+implements a simple algorithm:
+
+* if a transaction attempts fails for any reason, mark the server as unavailable
+  for the next 30 seconds.
+* in case of repeated failures, e.g., if the first transaction after the 30 seconds
+  timer fails, increment that timer to 60 seconds, then 90 secodns, etc.
+* if a transaction finally succeeds, reset the timer.
+
+## Handling access controlled servers
+
+The standard version of Mastodon server software allows the discovery API to be
+used without access control. In contrast, some other server software like for example
+Pleroma will subject these API to access control. The requests will fail. The failures
+will be treated similarly yo unresponsive servers: first a 30 second timer, then 60,
+then 90, etc.
+
+Users of access control servers will still be discovered, despite these controls,
+because their toots and their favouriting will be cached on other servers, and
+will be discovered on these servers.
